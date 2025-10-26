@@ -1,0 +1,574 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Junimo Hut Hotspot Analyzer</title>
+    <style>
+        /* CSS from Junimohut_Old.html (User preferred styling) */
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background-color: #2c2f33; /* Dark background */
+            color: #e0e0e0; /* Light text */
+            text-align: center; padding: 20px;
+            margin: 0;
+        }
+        #container {
+            max-width: 1000px; margin: 0 auto; background: #36393f; /* Darker container */
+            padding: 20px;
+            border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+            border: 1px solid #4a4d53;
+        }
+        h1 { color: #7289da; } /* Discord-like purple/blue */
+        p { font-size: 1.1em; line-height: 1.6; color: #b9bbbe; }
+		#canvasWrapper {
+            position: relative;
+            margin-top: 20px;
+            display: none; /* Hidden until a farm is selected */
+            line-height: 0; /* remove bottom space from image */
+            border: 2px solid #23272a;
+            max-width: 100%;
+            /* NEW: This clips the image if it tries to burst out of the calculated size */
+            overflow: hidden; 
+            aspect-ratio: 80 / 65; /* Default, will be updated by JS */
+        }
+
+		#farmImage {
+			/* FIX: Ensure the image scales down to fit the wrapper's constrained size */
+			max-width: 100%; 
+			max-height: 100%; /* New: Constrain by height too */
+			height: auto;
+			display: block;
+			border-radius: 4px;
+			object-fit: contain; /* New: Ensures the image fits within the container without cropping */
+		}
+        /* Make canvas responsive and overlay the image */
+        #farmCanvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none; /* Heatmap doesn't block mouse */
+        }
+        /* This overlay div is for mouse events (hover/tooltip) */
+        #mouseOverlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            cursor: crosshair;
+            z-index: 10; 
+        }
+        button {
+            background-color: #7289da; color: #ffffff; font-size: 1.2em; font-weight: bold;
+            border: none; padding: 12px 24px; border-radius: 5px; cursor: pointer;
+            margin: 20px 0; transition: all 0.2s ease;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+        }
+        button:hover { background-color: #677bc4; box-shadow: 0 4px 8px rgba(0,0,0,0.3); }
+        button:disabled { background-color: #5a5e63; cursor: not-allowed; color: #9fa3a7; }
+        #results { 
+            font-size: 1.2em; font-weight: bold; color: #fabd2f; /* Gold color */
+            min-height: 2em; padding-top: 10px;
+        }
+        label, select { font-size: 1.1em; font-weight: bold; display: block; margin-bottom: 10px; color: #e0e0e0; }
+        select { 
+            padding: 8px; border-radius: 5px; width: 50%; margin: 0 auto 10px auto; 
+            background: #4a4d53; color: #e0e0e0; border: 1px solid #23272a;
+        }
+        .loader {
+            border: 5px solid #4a4d53;
+            border-top: 5px solid #7289da;
+            border-radius: 50%;
+            width: 50px;
+            height: 50px;
+            animation: spin 1s linear infinite;
+            margin: 20px auto;
+            display: none; /* Hidden by default */
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        /* Tooltip Style */
+        #tooltip {
+            position: absolute;
+            background-color: rgba(0, 0, 0, 0.8);
+            color: white;
+            padding: 5px 10px;
+            border-radius: 4px;
+            font-size: 0.9em;
+            pointer-events: none; /* Important */
+            display: none; /* Hidden by default */
+            white-space: nowrap;
+            z-index: 1000;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="container">
+        <h1>Junimo Hut Hotspot Analyzer</h1>
+        <p>This tool analyzes farm maps to find the best raw tile count for a Junimo Hut. Hover over the heatmap to see tile counts.</p>
+        
+        <label for="farmSelector">Step 1: Choose a Farm Type</label>
+        <select id="farmSelector">
+            <option value="">-- Select a Farm --</option>
+            <option value="standard">Standard Farm</option>
+            <option value="riverland">Riverland Farm</option>
+            <option value="forest">Forest Farm</option>
+            <option value="hilltop">Hill-top Farm</option>
+            <option value="wilderness">Wilderness Farm</option>
+            <option value="fourcorners">Four Corners Farm</option>
+            <option value="meadowlands">Meadowlands Farm</option>
+        </select>
+
+        <button id="runButton" disabled>Step 2: Find Hotspots!</button>
+        <div id="results">Please select a farm to begin.</div>
+        
+        <div class="loader" id="loader"></div>
+
+        <div id="canvasWrapper">
+            <img id="farmImage" src="" alt="Farm Layout" crossOrigin="Anonymous" />
+            <canvas id="farmCanvas"></canvas>
+            <div id="mouseOverlay"></div>
+            <div id="tooltip"></div>
+        </div>
+    </div>
+
+<script>
+// --- 1. FARM MAP DATA (Corrected to match user's file names) ---
+// NOTE: dataWidth/dataHeight is the size of the *tile data* (e.g., from JSON: 80x65)
+// The boundary object defines the *full map image* dimensions (mapWidth/mapHeight) 
+// and where the tile data starts (startX, startY) to fix the scaling/alignment.
+const FARM_DATA = {
+    standard: {
+        dataWidth: 80, dataHeight: 65,
+        // Standard farm image is 84x69 tiles (2-tile border)
+        boundary: { startX: 2, startY: 2, mapWidth: 84, mapHeight: 69 },
+        fileName: "regular_tillable.json",
+        // NOTICE: You are MISSING a file for the standard farm in your directory listing.
+        // We will assume the common name for now. If this one still fails, you need to add this image.
+        imageUrl: 'farm_standard.png' 
+    },
+    riverland: {
+        dataWidth: 80, dataHeight: 65,
+        boundary: { startX: 2, startY: 2, mapWidth: 84, mapHeight: 69 },
+        fileName: "fishing_tillable.json",
+        // Riverland is associated with fishing, and your file is correctly named:
+        imageUrl: 'farm_fishing.png'
+    },
+    forest: {
+        dataWidth: 80, dataHeight: 65,
+        boundary: { startX: 2, startY: 2, mapWidth: 84, mapHeight: 69 },
+        fileName: "foraging_tillable.json",
+        // Forest is associated with foraging. Corrected from 'farm_forest.png':
+        imageUrl: 'farm_foraging.png'
+    },
+    hilltop: {
+        dataWidth: 80, dataHeight: 65,
+        boundary: { startX: 2, startY: 2, mapWidth: 84, mapHeight: 69 },
+        fileName: "mining_tillable.json",
+        // Hill-top is associated with mining. Corrected from 'farm_hilltop.png':
+        imageUrl: 'farm_mining.png'
+    },
+    wilderness: {
+        dataWidth: 80, dataHeight: 65,
+        boundary: { startX: 2, startY: 2, mapWidth: 84, mapHeight: 69 },
+        fileName: "combat_tillable.json",
+        // Wilderness is associated with combat. Corrected from 'farm_wilderness.png':
+        imageUrl: 'farm_combat.png'
+    },
+    fourcorners: {
+        dataWidth: 99, dataHeight: 80,
+        // Four Corners image is 101x82 tiles (1-tile border)
+        boundary: { startX: 1, startY: 1, mapWidth: 101, mapHeight: 82 },
+        fileName: "fourcorners_tillable.json",
+        // This one was already correct:
+        imageUrl: 'farm_fourcorners.png'
+    },
+    meadowlands: {
+        dataWidth: 100, dataHeight: 75,
+        // Meadowlands image is 104x79 tiles (2-tile border)
+        boundary: { startX: 2, startY: 2, mapWidth: 104, mapHeight: 79 },
+        fileName: "ranching_tillable.json",
+        // Meadowlands is associated with ranching. Corrected from 'farm_meadowlands.png':
+        imageUrl: 'farm_ranching.png'
+    }
+};
+
+        // --- 2. SCRIPT ---
+
+        // --- Constants ---
+        const HUT_WIDTH = 3; // Hut is 3x3 tiles
+        const HUT_HEIGHT = 3;
+        const HUT_RADIUS = 8; // 17x17 area, so 8 tiles from center
+        
+        // --- DOM Elements ---
+        const farmSelector = document.getElementById('farmSelector');
+        const runButton = document.getElementById('runButton');
+        const resultsDiv = document.getElementById('results');
+        const loader = document.getElementById('loader');
+        const canvasWrapper = document.getElementById('canvasWrapper');
+        const farmImage = document.getElementById('farmImage');
+        const farmCanvas = document.getElementById('farmCanvas');
+        const mouseOverlay = document.getElementById('mouseOverlay');
+        const tooltip = document.getElementById('tooltip');
+        const ctx = farmCanvas.getContext('2d');
+
+        // --- State ---
+        let currentFarm = null;
+        let currentScores = []; // Holds the 2D array of scores for the tooltip
+        let currentTillableLayer = []; // Holds the 2D array of tillable tiles
+
+        // --- Event Listeners ---
+        farmSelector.addEventListener('change', setupFarm);
+        runButton.addEventListener('click', analyzeFarm);
+        mouseOverlay.addEventListener('mousemove', handleTooltipMove);
+        mouseOverlay.addEventListener('mouseout', () => {
+            tooltip.style.display = 'none';
+        });
+
+        /**
+         * Sets up the farm image and canvas when a new farm is selected
+         */
+        function setupFarm() {
+            const farmKey = farmSelector.value;
+            if (!farmKey) {
+                canvasWrapper.style.display = 'none';
+                runButton.disabled = true;
+                resultsDiv.textContent = 'Please select a farm to begin.';
+                return;
+            }
+
+            currentFarm = FARM_DATA[farmKey];
+            
+            const { imageUrl, boundary } = currentFarm;
+            
+            resultsDiv.textContent = 'Farm selected. Ready to analyze!';
+            runButton.disabled = false; // Enable the button
+            farmImage.src = imageUrl; // Attempt to load the actual image
+            canvasWrapper.style.display = 'block';
+            
+            // Update wrapper aspect ratio using the full map image size
+            canvasWrapper.style.aspectRatio = `${boundary.mapWidth} / ${boundary.mapHeight}`;
+
+            // *** REFINED CANVAS SIZING LOGIC ***
+            // The canvas dimensions (width/height attributes) MUST match the image's *rendered* size.
+            // This is best done *after* the image has loaded and been sized by CSS.
+            farmImage.onload = () => {
+                // Get the rendered dimensions of the *image* element
+                const imgRect = farmImage.getBoundingClientRect();
+                
+                // Set the canvas width/height to exactly match the image's rendered dimensions
+                farmCanvas.width = imgRect.width;
+                farmCanvas.height = imgRect.height;
+                
+                // Re-draw heatmap if scores exist (e.g., after a window resize)
+                if (currentScores.length > 0) {
+                    // Recalculate maxScore, as it's needed for drawing intensity
+                    let maxScore = currentScores.flat().reduce((a, b) => Math.max(a, b), 0);
+                    drawHeatmap(currentScores, maxScore);
+                }
+                
+                console.log("Farm image loaded and canvas dimensions synchronized.");
+            };
+
+            // *** EXCEPTION HANDLING FOR IMAGE ***
+            farmImage.onerror = () => {
+                 console.warn(`Farm image failed to load (URL: ${imageUrl}). Ensure the image is in the correct folder.`);
+            };
+            
+            // Clear any old heatmap and scores
+            ctx.clearRect(0, 0, farmCanvas.width, farmCanvas.height);
+            currentScores = []; 
+        }
+
+        /**
+         * Creates a 2D map array from the JSON data.
+         */
+        function createTillableLayerFromJson(json, width, height) {
+            // Uses dataWidth/dataHeight for map creation
+            const map = Array.from({ length: height }, () => Array(width).fill(0));
+            
+            // Use the "tillable.tillable" array to mark 1s
+            const tillableTiles = json["tillable.tillable"]?.Tiles || [];
+            
+            for (const tileString of tillableTiles) {
+                const parts = tileString.split(', ');
+                const col = parseInt(parts[0], 10);
+                const row = parseInt(parts[1], 10);
+                
+                if (row >= 0 && row < height && col >= 0 && col < width) {
+                    map[row][col] = 1;
+                }
+            }
+            return map;
+        }
+
+        /**
+         * Calculates the score for a single hut placement
+         * (hutX, hutY) is the top-left corner of the 3x3 hut
+         */
+        function calculateScore(hutX, hutY, tillableLayer, mapWidth, mapHeight) {
+            let score = 0;
+            const hutCenterX = hutX + 1;
+            const hutCenterY = hutY + 1;
+
+            const startY = Math.max(0, hutCenterY - HUT_RADIUS);
+            const endY = Math.min(mapHeight - 1, hutCenterY + HUT_RADIUS);
+            const startX = Math.max(0, hutCenterX - HUT_RADIUS);
+            const endX = Math.min(mapWidth - 1, hutCenterX + HUT_RADIUS);
+
+            for (let y = startY; y <= endY; y++) {
+                for (let x = startX; x <= endX; x++) {
+                    
+                    // Is this tile *inside* the 3x3 hut?
+                    const isHutTile = (x >= hutX && x < hutX + HUT_WIDTH &&
+                                       y >= hutY && y < hutY + HUT_HEIGHT);
+
+                    // Check bounds just in case
+                    if (!isHutTile && y < mapHeight && x < mapWidth && tillableLayer[y][x] === 1) {
+                        score++;
+                    }
+                }
+            }
+            return score;
+        }
+
+        /**
+         * Main function to fetch data, run analysis, and draw the heatmap
+         */
+        async function analyzeFarm() {
+            if (!currentFarm) return;
+
+            // --- UI Update: Start Loading ---
+            runButton.disabled = true;
+            farmSelector.disabled = true;
+            loader.style.display = 'block';
+            resultsDiv.textContent = 'Fetching local map data...';
+            // IMPORTANT: Clear canvas *before* the async fetch
+            ctx.clearRect(0, 0, farmCanvas.width, farmCanvas.height);
+            currentScores = [];
+            
+            // Use new names
+            const { dataWidth, dataHeight, fileName } = currentFarm;
+            
+            // --- 1. Fetch Data ---
+            let mapJson;
+            try {
+                const response = await fetch(fileName); 
+                if (!response.ok) {
+                    throw new Error(`'${fileName}' not found or could not be loaded.`);
+                }
+                mapJson = await response.json();
+                resultsDiv.textContent = 'Map data loaded. Analyzing...';
+            } catch (error) {
+                console.error("Fetch error:", error);
+                resultsDiv.textContent = `Error: Could not load '${fileName}'. Make sure it's in the same folder as this HTML file.`;
+                loader.style.display = 'none';
+                runButton.disabled = false;
+                farmSelector.disabled = false;
+                return;
+            }
+
+            // Use setTimeout to allow the "Analyzing..." message to render
+            setTimeout(() => {
+                // --- 2. Decode Data ---
+                try {
+                    // Pass dataWidth/dataHeight
+                    currentTillableLayer = createTillableLayerFromJson(mapJson, dataWidth, dataHeight);
+                } catch (e) {
+                    console.error("Error parsing JSON data:", e);
+                    resultsDiv.textContent = 'Error: Failed to parse map data. The JSON file might be corrupt.';
+                    loader.style.display = 'none';
+                    runButton.disabled = false;
+                    farmSelector.disabled = false;
+                    return;
+                }
+                
+                // --- 3. Calculate Scores ---
+                const scores = Array.from({ length: dataHeight }, () => Array(dataWidth).fill(0));
+                let maxScore = 0;
+
+                // Use dataWidth/dataHeight for loop limits
+                for (let y = 0; y <= dataHeight - HUT_HEIGHT; y++) {
+                    for (let x = 0; x <= dataWidth - HUT_WIDTH; x++) {
+                        
+                        // Check if the 3x3 hut can be placed here (all 9 tiles must be tillable)
+                        let canPlace = true;
+                        for (let dy = 0; dy < HUT_HEIGHT; dy++) {
+                            for (let dx = 0; dx < HUT_WIDTH; dx++) {
+                                // Check bounds just in case, though loop should prevent this
+                                if (y + dy >= dataHeight || x + dx >= dataWidth || currentTillableLayer[y + dy][x + dx] !== 1) {
+                                    canPlace = false;
+                                    break;
+                                }
+                            }
+                            if (!canPlace) break;
+                        }
+
+                        if (canPlace) {
+                            // Pass dataWidth/dataHeight
+                            const score = calculateScore(x, y, currentTillableLayer, dataWidth, dataHeight);
+                            scores[y][x] = score;
+                            if (score > maxScore) {
+                                maxScore = score;
+                            }
+                        }
+                    }
+                }
+                
+                currentScores = scores; // Save for tooltip
+
+                // --- 4. Draw Heatmap ---
+                drawHeatmap(scores, maxScore);
+
+                // --- 5. UI Update: Finish ---
+                loader.style.display = 'none';
+                if (maxScore > 0) {
+                    resultsDiv.textContent = `Analysis Complete! Best spots found with ${maxScore} tillable tiles.`;
+                } else {
+                    resultsDiv.textContent = `Analysis Complete! No valid placement spots found on tillable land.`;
+                }
+                runButton.disabled = false;
+                farmSelector.disabled = false;
+            }, 50); // 50ms delay to let loader appear
+        }
+
+        /**
+         * Draws the final heatmap on the canvas
+         */
+        function drawHeatmap(scores, maxScore) {
+            if (maxScore === 0 || !currentFarm) {
+                console.warn("No valid placements found or maxScore is 0.");
+                return;
+            }
+            
+            // Get the corrected dimensions and boundaries
+            const { dataWidth, dataHeight, boundary } = currentFarm;
+            
+            // Re-sync canvas dimensions to its wrapper's current rendered size
+            // This is a safety check, but the onload handler should handle it too
+            const imgRect = farmImage.getBoundingClientRect();
+            farmCanvas.width = imgRect.width;
+            farmCanvas.height = imgRect.height;
+            
+            // Calculate tile pixel size based on the full map image size
+            // We use the canvas's physical width/height now, which matches the image
+            const tileWidthPx = farmCanvas.width / boundary.mapWidth;
+            const tileHeightPx = farmCanvas.height / boundary.mapHeight;
+
+            ctx.clearRect(0, 0, farmCanvas.width, farmCanvas.height);
+            
+            // Theoretical max coverage is 17x17 (289) minus the 3x3 (9) hut = 280
+            const maxPossible = 280; 
+
+            for (let y = 0; y < dataHeight; y++) {
+                for (let x = 0; x < dataWidth; x++) {
+                    const score = scores[y][x];
+                    if (score > 0) {
+                        // Normalize score
+                        const intensity = score / maxPossible; 
+                        // Hue: 120 (green) -> 0 (red)
+                        const hue = 120 * (1 - intensity);
+                        // Opacity: scale from 0.1 to 0.7
+                        const opacity = 0.1 + (intensity * 0.6);
+
+                        ctx.fillStyle = `hsla(${hue}, 100%, 50%, ${opacity})`;
+                        
+                        // Use boundary offset to draw heatmap correctly aligned with the image
+                        const drawX = (x + boundary.startX) * tileWidthPx;
+                        const drawY = (y + boundary.startY) * tileHeightPx;
+                        
+                        // Draw with a small overlap to cover anti-aliasing gaps
+                        ctx.fillRect(drawX, drawY, tileWidthPx + 0.5, tileHeightPx + 0.5);
+                    }
+                }
+            }
+        }
+        
+        /**
+         * Handles mouse moving over the overlay to show the tooltip
+         */
+        function handleTooltipMove(e) {
+            if (currentScores.length === 0 || !currentFarm) {
+                tooltip.style.display = 'none';
+                return;
+            }
+
+            const { dataWidth, dataHeight, boundary } = currentFarm;
+            // Use the farmImage's rendered size, which the canvas is matched to
+            const rect = farmImage.getBoundingClientRect(); 
+            
+            // Calculate mouse position relative to the image/overlay
+            const x = e.clientX - rect.left;
+            const y = e.clientY - rect.top;
+            
+            // Calculate which TILE the mouse is over on the FULL map image (0 to mapWidth/mapHeight)
+            // Use rect.width and rect.height for pixel dimensions
+            const fullMapTileX = Math.floor((x / rect.width) * boundary.mapWidth);
+            const fullMapTileY = Math.floor((y / rect.height) * boundary.mapHeight);
+
+            // Adjust for the border offset to get the DATA tile coordinates (0 to dataWidth/dataHeight)
+            const tileX = fullMapTileX - boundary.startX;
+            const tileY = fullMapTileY - boundary.startY;
+
+            // Check if the calculated tile is within the usable data area
+            if (tileY < 0 || tileY >= dataHeight || tileX < 0 || tileX >= dataWidth) {
+                tooltip.style.display = 'none';
+                return;
+            }
+            
+            const score = currentScores[tileY][tileX];
+            
+            if (score > 0) {
+                tooltip.style.display = 'block';
+                tooltip.textContent = `(${tileX}, ${tileY}): ${score} tiles`;
+
+                // --- TOOLTIP POSITIONING FIX ---
+                // Get the parent wrapper's position relative to the viewport
+                const parentRect = canvasWrapper.getBoundingClientRect();
+
+                // Calculate position relative to the PARENT (#canvasWrapper)
+                let finalX = e.clientX - parentRect.left;
+                let finalY = e.clientY - parentRect.top;
+                
+                const tooltipWidth = tooltip.offsetWidth;
+                const tooltipHeight = tooltip.offsetHeight;
+                const offset = 15; // Offset from the cursor
+
+                // X-axis check (Flip to the left if too close to the right edge of the wrapper)
+                if (finalX + offset + tooltipWidth > parentRect.width) {
+                    // Flip to the left
+                    finalX = finalX - tooltipWidth - offset;
+                } else {
+                    // Position to the right
+                    finalX = finalX + offset;
+                }
+
+                // Y-axis check (Flip above the cursor if too close to the bottom edge of the wrapper)
+                if (finalY + tooltipHeight + offset > parentRect.height) {
+                    // Flip above the cursor
+                    finalY = finalY - tooltipHeight - offset;
+                } else {
+                    // Position below the cursor
+                    finalY = finalY + offset;
+                }
+                
+                tooltip.style.left = `${finalX}px`;
+                tooltip.style.top = `${finalY}px`;
+                
+            } else {
+                tooltip.style.display = 'none';
+            }
+        }
+        
+        // --- Initial setup on page load ---
+        setupFarm(); // Call once to initialize the state
+
+    </script>
+</body>
+</html>
